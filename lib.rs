@@ -2,91 +2,69 @@
 #![feature(alloc_error_handler)]
 
 use scale::{Decode, Encode};
-
-#[global_allocator]
-static mut ALLOC: BumpAllocator = BumpAllocator {};
-
-#[alloc_error_handler]
-fn oom(_: core::alloc::Layout) -> ! {
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 use core::alloc::{
     GlobalAlloc,
     Layout,
 };
+use core::cell::RefCell;
+use core::mem::MaybeUninit;
+use core::ptr::{self, NonNull};
 
-static mut INNER: InnerAlloc = InnerAlloc::new();
-
-/// A bump allocator suitable for use in a Wasm environment.
-pub struct BumpAllocator;
-
-unsafe impl GlobalAlloc for BumpAllocator {
-    #[inline]
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        match INNER.alloc(layout) {
-            Some(start) => start as *mut u8,
-            None => core::ptr::null_mut(),
-        }
-    }
-
-    #[inline]
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        // A new page in Wasm is guaranteed to already be zero initialized, so we can just use our
-        // regular `alloc` call here and save a bit of work.
-        //
-        // See: https://webassembly.github.io/spec/core/exec/modules.html#growing-memories
-        self.alloc(layout)
-    }
-
-    #[inline]
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+#[alloc_error_handler]
+fn oom(_: core::alloc::Layout) -> ! {
+    unsafe { abort() }
 }
 
-#[cfg_attr(feature = "std", derive(Debug, Copy, Clone))]
-struct InnerAlloc {
-    /// Points to the start of the next available allocation.
-    next: usize,
-
-    /// The address of the upper limit of our heap.
-    upper_limit: usize,
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    unsafe { abort() }
 }
 
-impl InnerAlloc {
+
+struct Alloc {
+    heap: RefCell<linked_list_allocator::Heap>,
+}
+
+impl Alloc {
     const fn new() -> Self {
         Self {
-            next: 0x300000000,
-            upper_limit: 0x400000000,
+            heap: RefCell::new(linked_list_allocator::Heap::empty()),
         }
     }
+}
 
-    /// Tries to allocate enough memory on the heap for the given `Layout`. If there is not enough
-    /// room on the heap it'll try and grow it by a page.
-    ///
-    /// Note: This implementation results in internal fragmentation when allocating across pages.
-    fn alloc(&mut self, layout: Layout) -> Option<usize> {
-        let alloc_start = self.next;
-
-        let aligned_size = layout.pad_to_align().size();
-        let alloc_end = alloc_start.checked_add(aligned_size)?;
-
-        if alloc_end > self.upper_limit {
-            panic!("lol");
-        } else {
-            self.next = alloc_end;
-            Some(alloc_start)
-        }
+unsafe impl GlobalAlloc for Alloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        self.heap
+            .borrow_mut()
+            .allocate_first_fit(layout)
+            .ok()
+            .map_or(ptr::null_mut(), |allocation| allocation.as_ptr())
     }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        self.heap
+            .borrow_mut()
+            .deallocate(NonNull::new_unchecked(ptr), layout)
+    }
+}
+
+#[global_allocator]
+static mut ALLOCATOR: Alloc = Alloc::new();
+
+pub unsafe fn init() {
+    const HEAP_SIZE: usize = 0x8000;
+    static mut HEAP: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+    ALLOCATOR
+        .heap
+        .borrow_mut()
+        .init(HEAP.as_mut_ptr() as *mut u8, HEAP_SIZE)
 }
 
 
 extern "C" {
     fn ext_syscall(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64;
+    fn abort() -> !;
 }
 
 fn set_storage(key: &[u8], val: &[u8]) -> u32 {
@@ -154,6 +132,10 @@ fn input(output: &mut [u8]) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn entrypoint() {
+    unsafe {
+        init()
+    }
+
     let mut buffer = [0u8; 1024];
     let len = input(buffer.as_mut());
 

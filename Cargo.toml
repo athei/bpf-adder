@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
+linked_list_allocator = "0.10.3"
 
 [lib]
 name = "flipper"
