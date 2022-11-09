@@ -1,7 +1,18 @@
 use scale::{Decode, Encode};
 
 extern "C" {
-    fn ext_syscall(r1: u64, r2: u64, r3: u64, r4: u64, r5: u64) -> u64;
+    fn ext_syscall(
+        syscall_no: u64,
+        input_ptr: u64,
+        output_ptr: u64,
+        _unused: u64,
+        _unused: u64,
+    ) -> u64;
+}
+
+fn input_area() -> &'static [u8] {
+    const INPUT_AREA: usize = 0x4_0000_0000;
+    unsafe { std::slice::from_raw_parts(INPUT_AREA as _, 3) }
 }
 
 fn deposit_event(data: &[u8]) {
@@ -27,6 +38,7 @@ fn deposit_event(data: &[u8]) {
 
 fn set_storage(key: &[u8], val: &[u8]) -> u32 {
     const SYSCALL_NO: u64 = 3;
+    let mut ret: u32 = u32::MAX;
     #[derive(Encode)]
     struct Input {
         key_ptr: u64,
@@ -41,11 +53,20 @@ fn set_storage(key: &[u8], val: &[u8]) -> u32 {
         value_len: val.len() as _,
     }
     .encode();
-    unsafe { ext_syscall(SYSCALL_NO, input.as_ptr() as usize as _, 0, 0, 0) as _ }
+    unsafe {
+        ext_syscall(
+            SYSCALL_NO,
+            input.as_ptr() as usize as _,
+            &mut ret as *mut u32 as usize as u64,
+            0,
+            0,
+        ) as _
+    }
 }
 
 fn get_storage(key: &[u8], output: &mut [u8]) -> Option<u32> {
     const SYSCALL_NO: u64 = 7;
+    let mut ret: u32 = u32::MAX;
     #[derive(Encode)]
     struct Input {
         key_ptr: u64,
@@ -62,7 +83,13 @@ fn get_storage(key: &[u8], output: &mut [u8]) -> Option<u32> {
     }
     .encode();
     unsafe {
-        let ret = ext_syscall(SYSCALL_NO, input.as_ptr() as usize as _, 0, 0, 0);
+        ext_syscall(
+            SYSCALL_NO,
+            input.as_ptr() as usize as _,
+            &mut ret as *mut u32 as usize as u64,
+            0,
+            0,
+        );
         deposit_event(ret.to_le_bytes().as_ref());
         if ret != 0 {
             return None;
@@ -93,7 +120,14 @@ fn input(output: &mut [u8]) -> u32 {
 #[no_mangle]
 pub extern "C" fn entrypoint() {
     let mut buffer = [0u8; 1024];
+
     let len = input(buffer.as_mut());
+
+    deposit_event(len.to_le_bytes().as_ref());
+
+    let input_area = input_area().to_vec();
+
+    deposit_event(input_area.as_slice());
 
     if len == 0 {
         return;
