@@ -1,20 +1,15 @@
 [package]
-name = "flipper"
+name = "bpf-adder"
 version = "0.1.0"
-authors = ["[your_name] <[your_email]>"]
+authors = ["alex", "bigpep"]
 edition = "2021"
 
 [dependencies]
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
-linked_list_allocator = "0.10.3"
 
 [lib]
 name = "flipper"
 path = "lib.rs"
 crate-type = [
-	# Used for normal contract Wasm blobs.
 	"cdylib",
 ]
-
-[profile.release]
-strip = true
